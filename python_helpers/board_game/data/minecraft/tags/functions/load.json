@@ -1,0 +1,6 @@
+{
+    "replace": false,
+    "values": [
+        "board_game:board_game/reset"
+    ]
+}

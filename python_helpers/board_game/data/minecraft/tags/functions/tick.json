@@ -1,0 +1,7 @@
+{
+    "replace": false,
+    "values": [
+        "board_game:board_game/main",
+        "board_game:board_game/update"
+    ]
+}

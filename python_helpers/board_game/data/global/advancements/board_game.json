@@ -1,0 +1,18 @@
+{
+    "display": {
+        "title": "board_game",
+        "description": "board_game",
+        "icon": {
+            "item": "minecraft:player_head",
+            "nbt": "{SkullOwner: 'board_game'}"
+        },
+        "show_toast": false,
+        "announce_to_chat": false
+    },
+    "parent": "global:root",
+    "criteria": {
+        "trigger": {
+            "trigger": "minecraft:tick"
+        }
+    }
+}
