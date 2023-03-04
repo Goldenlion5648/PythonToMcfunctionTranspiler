@@ -20,6 +20,7 @@ execute as __ at __
 
 MARKER_MOB = "minecraft:marker"
 ABOVE = "~ ~1 ~"
+BELOW = "~ ~-1 ~"
 update_files = []
 folders_in_path = os.getcwd().split(os.sep)
 try:
@@ -27,12 +28,22 @@ try:
 except ValueError:
     print("DATAPACKS FOLDER WAS NOT FOUND, ARE YOU AWARE YOU ARE NOT IN A DATAPACK FILE?")
 
+DATAPACK_FOLDER_PREFIX = f"{DATAPACK_NAME}:{DATAPACK_NAME}/"
+
 class OutputFile:
-    def __init__(self, file_no_ext, data=None, is_update_file=False) -> None:
+    def __init__(self, file_no_ext, data=None, is_update_file=False, folder="", force_unqiue_lines=False) -> None:
         self.file_name = f"{file_no_ext}"
         self.file_name_with_ext = f"{file_no_ext}.mcfunction"
         self.lines = [] if data is None else data
-        self.variants = []
+        self.variants: list[OutputFile]= []
+        self.folder = folder
+        self.force_unqiue_lines = force_unqiue_lines
+        if self.folder:
+            self.folder += '/'
+        self.path_in_datapack = f"{self.folder}{self.file_name}"
+        self.folder_and_extension = f"{self.folder}{self.file_name_with_ext}"
+        self.path_with_datapack_name = f"{DATAPACK_FOLDER_PREFIX}{self.path_in_datapack}"
+        self.path_with_datapack_name_and_extension = f"{DATAPACK_FOLDER_PREFIX}{self.folder_and_extension}"
         if is_update_file:
             update_files.append(file_no_ext)
             atexit.register(add_update_files)
@@ -40,9 +51,20 @@ class OutputFile:
 
     def append(self, line):
         self.lines.append(line)
+
+    def filter_unique_lines(self):
+        seen = set()
+        new_lines = []
+        for line in self.lines:
+            if line in seen:
+                continue
+            seen.add(line)
+            new_lines.append(line)
+        self.lines = new_lines
     
     def add_variant(self, suffix):
         self.variants.append(OutputFile(f"{self.file_name}{suffix}"))
+        return self.variants[-1]
 
     def get_variant(self, index) -> 'OutputFile':
         return self.variants[index]
@@ -53,7 +75,15 @@ class OutputFile:
     
     def write_to_file(self):
         # print(self.lines)
-        with open(self.file_name_with_ext, 'w') as f:
+        file_to_make = self.folder_and_extension
+        folder_to_make = os.path.dirname(file_to_make)
+        if folder_to_make:
+            os.makedirs(folder_to_make, exist_ok=True)
+        
+        if self.force_unqiue_lines:
+            self.filter_unique_lines()
+
+        with open(file_to_make, 'w') as f:
             try:
                 print("\n".join(self.lines), file=f)
             except TypeError:
@@ -98,12 +128,45 @@ helper_update = OutputFile("helper_update", is_update_file=True)
 
 def call_function(function_name:OutputFile | str, delay=0, unit='t'):
     if type(function_name) is OutputFile:
-        function_part = f"function {DATAPACK_NAME}:{DATAPACK_NAME}/{function_name.file_name}"
+        function_part = f"function {function_name.path_with_datapack_name}"
     else:
         function_part = f"function {DATAPACK_NAME}:{DATAPACK_NAME}/{function_name}"
     if delay > 0:
         return [f"schedule {function_part} {convert_to_ticks(delay, unit)}"]
     return [function_part]
+
+get_type = type
+def selector_entity(tag=None, tags=None, negative_tags=None, 
+                    limit=None,type=None,dx=None,dy=None,dz=None, 
+                    distance=None, sort=None, team=None,
+                    score=None, scores=None, selector='@e'):
+    to_go_over = list(locals().items())
+    ret = []
+    for keyword, potential_value in to_go_over:
+        # print(keyword, potential_value)
+        if potential_value is None or keyword == 'selector':
+            continue
+        if keyword == 'tags':
+            keyword = keyword.removesuffix("s")
+        if keyword == 'score':
+            keyword += 's'
+        if get_type(potential_value) is list:
+            if keyword == 'scores':
+                desired_values = [f"{scoreboard}={value}" for scoreboard, value in potential_value]
+                ret.append(f"{keyword}={{{','.join(desired_values)}}}")
+            else:
+                ret.extend(f"{keyword}={value}" for value in potential_value)
+        else:
+            ret.append(f"{keyword}={potential_value}")
+    combined = ','.join(ret)
+    return f"{selector}[{combined}]" if combined else f"{selector}"
+
+entity_selector = selector_entity
+at_e = selector_entity
+at_a = partial(selector_entity, selector='@a')
+at_p = partial(selector_entity, selector='@p')
+at_s = partial(selector_entity, selector='@s')
+    
 
 def play_sound_at_pitches_based_on_score(counting_score, sound_name, cooldown_values, pitches):
     return [
@@ -152,12 +215,23 @@ def convert_to_ticks(value: int, unit: str):
         "m" : 1200
     }
     return value*conversion[unit]
-def add_delay(delay: int, tag: str, unit="t"):
+def summon_delay_cloud(delay: int, tag: str, unit="t"):
     return ['summon area_effect_cloud ~ ~ ~ {Tags:["'f'{tag}"],Age:'+f"-{convert_to_ticks(delay, unit)}}}"]
 
 def run_when_tag_gone(tag, to_run):
     return execute_unless(f"entity @e[type=area_effect_cloud,tag={tag}]", to_run)
 allow_after_delay = run_when_tag_gone
+
+delayed_code_id = "delayed_code_id"
+delayed_code_num = 0
+
+def delay_code_block(lines_to_delay : list, delay_time: int, unit='t'):
+    global delayed_code_num
+    delayed_code_num += 1
+    curret_delayed_code = OutputFile(f"{delayed_code_id}{delayed_code_num}", folder="delayed_code")
+    curret_delayed_code.extend(lines_to_delay)
+    return call_function(curret_delayed_code, delay_time, unit)
+
 
 def execute_if_divisible(scoreboard_name: int | str, divisor: int | str, wanted_remainder: int, to_run : list, if_or_unless: str="if"):
     rem_saved_to_owner = f"remainder_of_{scoreboard_name}_mod_{divisor}"
@@ -185,17 +259,57 @@ def tuple_to_relative_string(tup):
     return f"~{tup[0]} ~{tup[1]} ~{tup[2]}"
 
 def tuple_to_string(tup):
+    if type(tup) is str:
+        return tup
     return " ".join(str(x) for x in tup)
 
+def effect(target, potion_effect, time='infinite', amplifier=0):
+    return [f'effect give {target} {potion_effect} {time} {amplifier}']
+effect_give = effect
+def effect_clear(target, effect=''):
+    return [f'effect clear {target} {effect}']
+
 def execute_at(pos : str | tuple[int, int, int], to_run : list):
-    if type(pos) == tuple:
-        pos = tuple_to_string(pos)
-    return [f"execute positioned {pos} run {command}" for command in to_run]
+    return [f"execute positioned {tuple_to_string(pos)} run {command}" for command in to_run]
 
 execute_positioned = execute_at
 
+shoot_facing_controller = OutputFile("shoot_facing_controller", force_unqiue_lines=True, is_update_file=True)
+def shoot_facing(shooter=at_s(), step=.5, max_range=60, additional_tag=None):
+    to_move_tag = "not_adjusted"
+    # move_in_facing_dir_tag = "move_in_facing_direction"
+    step_size_tag = f"step_size{step}".replace(".", "_")
+    current_function_name = f"move_forward_by{step}".replace(".", "_")
+    temp_function = OutputFile(current_function_name, 
+        tp(at_s(), f"^ ^ ^{step}") + 
+        execute_if_entity(f"@a[sort=nearest,limit=1,distance={max_range}..]", 
+            kill(at_s())
+        )
+    )
+    shoot_facing_controller.extend(
+        execute_as_at(at_e(tags=[step_size_tag]),
+            call_function(temp_function)
+        )
+    )
+    extra_tags = [additional_tag] if additional_tag is not None else []
+    return summon("marker", (0,0,0), tags=[to_move_tag, step_size_tag] + extra_tags) +\
+        tp(at_e(tag=to_move_tag), shooter) +\
+        execute_as_at(at_e(tag=to_move_tag), tp(at_s(), ABOVE)) +\
+    remove_tag(at_e(tag=to_move_tag), to_move_tag)
+
+
 def execute_if(condition : str, to_run : list):
     return convert_from_single_as_needed(f"execute if {condition} run", to_run)
+
+def execute_if_entity(selector : str, to_run : list):
+    return convert_from_single_as_needed(f"execute if entity {selector} run", to_run)
+
+def execute_if_block_matches(position_to_check: str | tuple[int, int, int], block_to_match: str, to_run : list):
+    if type(position_to_check) != str:
+        position_to_check = tuple_to_string(position_to_check)
+    return convert_from_single_as_needed(f"execute if block {position_to_check} {block_to_match} run", to_run)
+
+execute_if_block = execute_if_block_matches
 
 def execute_if_score(scoreboard_name : str, check: str, to_run : list, if_or_unless: str="if", owner=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(scoreboard_name)
@@ -231,6 +345,11 @@ def set_score_from_other_score(score_to_set: str, other_score: str, owner: str=G
     create_scoreboard_as_needed(score_to_set)
     return [f"execute store result score {owner} {score_to_set} run scoreboard players get {owner2} {other_score}"]
     
+def get_four_corners(pos1, pos2):
+    return [pos1, (pos1[0], pos1[1], pos2[2]), (pos2[0], pos1[1], pos1[2]),  pos2]
+
+def get_center(pos1, pos2):
+    return tuple((c1 + c2) // 2 for c1, c2 in zip(pos1, pos2))
 
 def set_score(scoreboard_name: str, value: str | int, owner: str=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(scoreboard_name)
@@ -258,8 +377,9 @@ def execute_as(selector : str, to_run : list):
     return convert_from_single_as_needed(f"execute as {selector} run", to_run)
 
 
-def execute_as_at_self(selector : str, to_run : list):
-    return convert_from_single_as_needed(f"execute as {selector} at @s run", to_run)
+def execute_as_at_self(selector : str, to_run : list, anchored_eyes=False):
+    extra = " anchored eyes" if anchored_eyes else ""
+    return convert_from_single_as_needed(f"execute as {selector} at @s{extra} run", to_run)
 
 execute_as_at = execute_as_at_self
 
@@ -274,11 +394,29 @@ def element_wise(a, b):
 def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
     if tags is None:
         tags = []
-    return [f"summon marker {pos}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
+    return [f"summon marker {tuple_to_string(pos)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
 summon_marker = place_marker
+
+def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
+    if tags is None:
+        tags = []
+    return [f"summon marker {tuple_to_string(pos)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
+
+def summon(entity: str, position: str| tuple[int, int, int], tags:list[str]=None):
+    return [f"summon {entity} {tuple_to_string(position)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
 
 def tp(from_, to_):
     return [f"tp {from_} {to_}"]
+
+def fill(pos1, pos2, block, mode="destroy", extra_args=''):
+    '''mode can be destroy, hollow, keep, outline, or replace.
+    Only replace has args after that'''
+    return [f'fill {tuple_to_string(pos1)} {tuple_to_string(pos2)} {block} {mode} {extra_args}']
+
+def setblock(pos1, block, mode="destroy"):
+    '''mode can be destroy, keep, or replace.'''
+    return [f'setblock {tuple_to_string(pos1)} {block} {mode}']
+
 
 def say(to_say:str):
     return [f"say {to_say}"]
@@ -325,39 +463,7 @@ def format_text(text=None,
 def negate(to_negate):
     return f"!{to_negate}"
 
-get_type = type
-def selector_entity(tag=None, tags=None, negative_tags=None, 
-                    limit=None,type=None,dx=None,dy=None,dz=None, 
-                    distance=None, sort=None, team=None,
-                    score=None, scores=None, selector='@e'):
-    # multiple_values_allowed = ["tags"]
-    # special = ["negative_tags"]
-    to_go_over = list(locals().items())
-    # print(to_go_over)
-    ret = []
-    for keyword, potential_value in to_go_over:
-        # print(keyword, potential_value)
-        if potential_value is None or keyword == 'selector':
-            continue
-        if keyword == 'tags':
-            keyword = keyword.removesuffix("s")
-        if keyword == 'score':
-            keyword += 's'
-        if get_type(potential_value) is list:
-            if keyword == 'scores':
-                desired_values = [f"{scoreboard}={value}" for scoreboard, value in potential_value]
-                ret.append(f"{keyword}={{{','.join(desired_values)}}}")
-            else:
-                ret.extend(f"{keyword}={value}" for value in potential_value)
-        else:
-            ret.append(f"{keyword}={potential_value}")
-    combined = ','.join(ret)
-    return f"{selector}[{combined}]" if combined else f"{selector}"
 
-entity_selector = selector_entity
-at_e = selector_entity
-at_a = partial(selector_entity, selector='@a')
-at_s = partial(selector_entity, selector='@s')
 
 def output_commands(file, commands):
     print("\n".join(commands), file=file)
@@ -374,8 +480,8 @@ def increment_each_tick(scoreboard_name, selector=GLOBAL_VAR_HOLDER):
 def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(scoreboard_name)
     # if scoreboard_name not in scoreboard_variables_created:
-    if val is not None:
-        write_scoreboard_line(scoreboard_set_value_template.format(holder, scoreboard_name, val))
+    # if val is not None:
+    write_scoreboard_line(scoreboard_set_value_template.format(holder, scoreboard_name, 0 if val is None else val ))
 
 def set_score_to_count_of(scoreboard, selector_to_count, 
                         scoreboard_owner=GLOBAL_VAR_HOLDER):
