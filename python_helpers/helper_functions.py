@@ -456,7 +456,8 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
     # calling_part = nested_functions.add_variant(nested_function_number)
     # nested_function_number += 1
     # calling_part.append(prefix + ' ' + call_function(current_nest)[0])
-    return call_function(current_nest)
+    ret = [[prefix][0] + ' ' + call_function(current_nest)[0]]
+    return ret
     # if current_nest.content in nested_seen:
     #     nested_function_number -= 1
     #     nested_functions.pop_variant()
@@ -473,7 +474,9 @@ def create_scoreboard_as_needed(scoreboard_name: str):
         reset.append(f"scoreboard objectives add {scoreboard_name} dummy")
 
 def set_score_to_total_of_other_scores(score_to_set, score_to_total_from_others, other_score_owner_selectors, score_to_set_owner=GLOBAL_VAR_HOLDER):
-    return [f'scoreboard players operation {score_to_set_owner} {score_to_set} += {other_score_owner_selectors} {score_to_total_from_others}']
+    return [
+        f'scoreboard players set {score_to_set_owner} {score_to_set} 0',
+        f'scoreboard players operation {score_to_set_owner} {score_to_set} += {other_score_owner_selectors} {score_to_total_from_others}']
 
 def place(structure_to_place, pos: tuple[int, int, int] | str):
     pos = tuple_to_string(pos)
