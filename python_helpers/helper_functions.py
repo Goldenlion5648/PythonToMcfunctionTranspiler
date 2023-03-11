@@ -2,8 +2,12 @@ import re
 import os
 import atexit
 import json
+import sys
 from enum import Enum
 from functools import partial
+import itertools as it
+import operator as op
+import shutil
 
 '''
 COMMON PITFALLS that cause bugs
@@ -21,14 +25,32 @@ execute as __ at __
 MARKER_MOB = "minecraft:marker"
 ABOVE = "~ ~1 ~"
 BELOW = "~ ~-1 ~"
+AIR = "air"
+CUR_POS = "~ ~ ~"
+SELF_POS = CUR_POS
+HERE = CUR_POS
 update_files = []
 folders_in_path = os.getcwd().split(os.sep)
 try:
     DATAPACK_NAME = folders_in_path[folders_in_path.index("datapacks") + 1]
 except ValueError:
     print("DATAPACKS FOLDER WAS NOT FOUND, ARE YOU AWARE YOU ARE NOT IN A DATAPACK FILE?")
+    exit()
 
 DATAPACK_FOLDER_PREFIX = f"{DATAPACK_NAME}:{DATAPACK_NAME}/"
+
+# remove old files
+files = os.listdir()
+if "helper_functions.py" in files:
+    print("\n\nYou ran the wrong file\n\n")
+    exit()
+for file in files:
+    if file.endswith(".mcfunction"):
+        # print(file)
+        os.remove(file)
+    if os.path.isdir(file) and all(x.endswith(".mcfunction") for x in os.listdir(file)):
+        shutil.rmtree(file)
+        # exit()
 
 class OutputFile:
     def __init__(self, file_no_ext, data=None, is_update_file=False, folder="", force_unqiue_lines=False) -> None:
@@ -38,7 +60,7 @@ class OutputFile:
         self.variants: list[OutputFile]= []
         self.folder = folder
         self.force_unqiue_lines = force_unqiue_lines
-        if self.folder:
+        if self.folder and not self.folder.endswith("/"):
             self.folder += '/'
         self.path_in_datapack = f"{self.folder}{self.file_name}"
         self.folder_and_extension = f"{self.folder}{self.file_name_with_ext}"
@@ -48,7 +70,11 @@ class OutputFile:
             update_files.append(file_no_ext)
             atexit.register(add_update_files)
         atexit.register(self.write_to_file)
+    @property
+    def content(self):
+        return "\n".join(self.lines)
 
+    
     def append(self, line):
         self.lines.append(line)
 
@@ -62,9 +88,14 @@ class OutputFile:
             new_lines.append(line)
         self.lines = new_lines
     
-    def add_variant(self, suffix):
-        self.variants.append(OutputFile(f"{self.file_name}{suffix}"))
+    def add_variant(self, suffix=''):
+        if not suffix:
+            suffix = len(self.variants)
+        self.variants.append(OutputFile(f"{self.file_name}{suffix}", folder=self.folder))
         return self.variants[-1]
+
+    def pop_variant(self):
+        self.variants.pop()
 
     def get_variant(self, index) -> 'OutputFile':
         return self.variants[index]
@@ -85,7 +116,7 @@ class OutputFile:
 
         with open(file_to_make, 'w') as f:
             try:
-                print("\n".join(self.lines), file=f)
+                print(self.content, file=f)
             except TypeError:
                 print("======Error with", self.file_name, "======")
                 print(self.lines)
@@ -95,8 +126,12 @@ UPDATE_JSON_FILE = None
 def add_update_files():
     global UPDATE_JSON_FILE
     # print(UPDATE_JSON_FILE)
-    with open(UPDATE_JSON_FILE, 'r') as f:
-        original = f.read()
+    # with open(UPDATE_JSON_FILE, 'r') as f:
+    #     original = f.read()
+    original = '''{
+    "replace": false,
+    "values": []
+}'''
     # print(original)
     original = json.loads(original)
     new_values = original["values"]
@@ -116,7 +151,7 @@ GLOBAL_VAR_HOLDER = 'global'
 CONST_SCOREBOARD_NAME = 'const'
 scoreboard_variables_created = set()
 
-reset = OutputFile("reset")
+reset = OutputFile("reset", force_unqiue_lines=True)
 reset.append("say Reload has completed")
 reset.append(f"scoreboard objectives add {CONST_SCOREBOARD_NAME} dummy")
 
@@ -125,16 +160,21 @@ reset.append(f"scoreboard objectives add {REMAINDER_SCOREBOARD_OBJECTIVE} dummy"
 
 helper_update = OutputFile("helper_update", is_update_file=True)
 
-
+scheduled_functions = []
 def call_function(function_name:OutputFile | str, delay=0, unit='t'):
     if type(function_name) is OutputFile:
         function_part = f"function {function_name.path_with_datapack_name}"
     else:
         function_part = f"function {DATAPACK_NAME}:{DATAPACK_NAME}/{function_name}"
     if delay > 0:
-        return [f"schedule {function_part} {convert_to_ticks(delay, unit)}"]
+        scheduled_functions.append(function_part.split(" ")[1])
+        return [f"schedule {function_part} {convert_to_ticks(delay, unit)} append"]
     return [function_part]
 
+def clear_scheduled_functions():
+    return [f"schedule clear {x}" for x in scheduled_functions]
+
+run_function = call_function
 get_type = type
 def selector_entity(tag=None, tags=None, negative_tags=None, 
                     limit=None,type=None,dx=None,dy=None,dz=None, 
@@ -248,9 +288,26 @@ def scoreboard_operation(score1, op, score2: int | str, owner1=GLOBAL_VAR_HOLDER
     create_scoreboard(score1, 0, owner1)
     return [f"scoreboard players operation {owner1} {score1} {op} {second_part}"]
 
+def increment_with_bound(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
+    return operation(score1, '+=', 1, owner1, owner2) + operation(score1, '<', bound, owner1, owner2)
+
+def decrement_with_bound(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
+    return operation(score1, '-=', 1, owner1, owner2) + operation(score1, '>', bound, owner1, owner2)
+
+def set_to_lower(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
+    return operation(score1, '<', bound, owner1, owner2)
+set_to_min = set_to_lower
+
+def set_to_higher(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
+    return operation(score1, '>', bound, owner1, owner2)
+set_to_max = set_to_higher
+
+def decrement_with_bound(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
+    return operation(score1, '-=', 1, owner1, owner2) + operation(score1, '>', bound, owner1, owner2)
+
 operation = scoreboard_operation
-def increment(score):
-    return scoreboard_operation(score, '+=', 1)
+def increment(score, owner1: str = GLOBAL_VAR_HOLDER):
+    return scoreboard_operation(score, '+=', 1, owner1=owner1)
 
 def raw(text: str):
     return [line.strip() for line in text.strip().splitlines()]
@@ -269,30 +326,35 @@ effect_give = effect
 def effect_clear(target, effect=''):
     return [f'effect clear {target} {effect}']
 
-def execute_at(pos : str | tuple[int, int, int], to_run : list):
-    return [f"execute positioned {tuple_to_string(pos)} run {command}" for command in to_run]
+def execute_at(pos : str | tuple[int, int, int], to_run : list, anchored_eyes=False):
+    extra = " anchored eyes" if anchored_eyes else ""
+    return [f"execute positioned {tuple_to_string(pos)}{extra} run {command}" for command in to_run]
 
 execute_positioned = execute_at
 
 shoot_facing_controller = OutputFile("shoot_facing_controller", force_unqiue_lines=True, is_update_file=True)
-def shoot_facing(shooter=at_s(), step=.5, max_range=60, additional_tag=None):
+def shoot_facing(shooter=at_s(), moving_entity="marker",step=.5, max_range=60, bullet_label_tag=None, code_to_run_after_step=None, repeats_per_tick=1):
+    code_to_run_after_step = [] if code_to_run_after_step is None else code_to_run_after_step
     to_move_tag = "not_adjusted"
     # move_in_facing_dir_tag = "move_in_facing_direction"
     step_size_tag = f"step_size{step}".replace(".", "_")
-    current_function_name = f"move_forward_by{step}".replace(".", "_")
+    current_function_name = f"{bullet_label_tag}_movement"
     temp_function = OutputFile(current_function_name, 
-        tp(at_s(), f"^ ^ ^{step}") + 
-        execute_if_entity(f"@a[sort=nearest,limit=1,distance={max_range}..]", 
-            kill(at_s())
-        )
+        (
+            tp(at_s(), f"^ ^ ^{step}") + 
+            code_to_run_after_step +
+            execute_if_entity(f"@a[sort=nearest,limit=1,distance={max_range}..]", 
+                kill(at_s())
+            )
+        ) * repeats_per_tick
     )
     shoot_facing_controller.extend(
         execute_as_at(at_e(tags=[step_size_tag]),
             call_function(temp_function)
         )
     )
-    extra_tags = [additional_tag] if additional_tag is not None else []
-    return summon("marker", (0,0,0), tags=[to_move_tag, step_size_tag] + extra_tags) +\
+    extra_tags = [bullet_label_tag] if bullet_label_tag is not None else []
+    return summon(moving_entity, (0,0,0), tags=[to_move_tag, step_size_tag] + extra_tags) +\
         tp(at_e(tag=to_move_tag), shooter) +\
         execute_as_at(at_e(tag=to_move_tag), tp(at_s(), ABOVE)) +\
     remove_tag(at_e(tag=to_move_tag), to_move_tag)
@@ -317,16 +379,18 @@ def execute_if_score(scoreboard_name : str, check: str, to_run : list, if_or_unl
 
 execute_unless_score = partial(execute_if_score, if_or_unless="unless")
 
-def execute_if_score_equals(scoreboard_name : str, value: int, to_run : list):
+def execute_if_score_equals(scoreboard_name : str, value: str|int, to_run : list):
     create_scoreboard(scoreboard_name)
     return convert_from_single_as_needed(f"execute if score {GLOBAL_VAR_HOLDER} {scoreboard_name} matches {value} run", to_run)
 execute_if_score_matches = execute_if_score_equals
-def execute_if_score_other_score(score1 : str, op: str, score2: str, to_run : list, owner1: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER):
+def execute_if_score_other_score(score1 : str, op: str, score2: str, to_run : list, owner1: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER, if_or_unless='if'):
     create_scoreboard_as_needed(score1)
-    return convert_from_single_as_needed(f"execute if score {owner1} {score1} {op} {owner2} {score2} run", to_run)
+    return convert_from_single_as_needed(f"execute {if_or_unless} score {owner1} {score1} {op} {owner2} {score2} run", to_run)
 
 def execute_if_score_equals_score(score1 : str, score2: str, to_run : list, owner1: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER):
     return execute_if_score_other_score(score1, '=', score2, to_run, owner1, owner2)
+def execute_unless_score_equals_score(score1 : str, score2: str, to_run : list, owner1: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER):
+    return execute_if_score_other_score(score1, '=', score2, to_run, owner1, owner2, if_or_unless='unless')
 def execute_unless(condition : str, to_run : list):
     return convert_from_single_as_needed(f"execute unless {condition} run", to_run)
 
@@ -355,23 +419,54 @@ def set_score(scoreboard_name: str, value: str | int, owner: str=GLOBAL_VAR_HOLD
     create_scoreboard_as_needed(scoreboard_name)
     return [f"scoreboard players set {owner} {scoreboard_name} {value}"]
 
+nested_function_number = 0
+nested_functions = OutputFile("nested_function", folder="nested_functions")
+nested_seen = {}
 def convert_from_single_as_needed(prefix:str, to_run: str | list):
+    global nested_function_number
     if type(to_run) == str:
         return [f"{prefix} {to_run}"]
-    before = to_run.copy()
+    # if type(to_run[0]) == list:
+    #     to_run = list_chain(to_run)
+    
+    # before = to_run.copy()
+    # print(to_run)
     to_run.sort(key=lambda x: x.startswith("tag"))
+    # try:
+    # except:
+        # print(to_run)
+        # exit()
+
     # if to_run != before:
         # print("NOTE: order was changed")
         # print("before:")
         # print("\n".join(before))
         # print("after:")
         # print("\n".join(to_run))
-    return [f"{prefix} {command[0] if type(command) is list else command}" for command in to_run]
+    inside_part = [f"{prefix} {command[0] if type(command) is list else command}" for command in to_run]
+    if "nop" in sys.argv:
+        return inside_part
+    current_nest = nested_functions.add_variant(nested_function_number)
+    nested_function_number += 1
+    current_nest.extend(inside_part)
+    if current_nest.content in nested_seen:
+        nested_function_number -= 1
+        nested_functions.pop_variant()
+        return call_function(nested_seen[current_nest.content])
+    nested_seen[current_nest.content] = current_nest
+    return call_function(current_nest)
 
 def create_scoreboard_as_needed(scoreboard_name: str):
     if scoreboard_name not in scoreboard_variables_created:
         scoreboard_variables_created.add(scoreboard_name)
         reset.append(f"scoreboard objectives add {scoreboard_name} dummy")
+
+def set_score_to_total_of_other_scores(score_to_set, score_to_total_from_others, other_score_owner_selectors, score_to_set_owner=GLOBAL_VAR_HOLDER):
+    return [f'scoreboard players operation {score_to_set_owner} {score_to_set} += {other_score_owner_selectors} {score_to_total_from_others}']
+
+def place(structure_to_place, pos: tuple[int, int, int] | str):
+    pos = tuple_to_string(pos)
+    return [f"place template {structure_to_place} {pos}"]
 
 def execute_as(selector : str, to_run : list):
     return convert_from_single_as_needed(f"execute as {selector} run", to_run)
@@ -388,8 +483,8 @@ def playsound(sound_name: str, pitch : float=1, to_play_sound_to_selector: str="
         [f"playsound {sound_name} master @s ~ ~ ~ {volume} {pitch}"]
     )
 
-def element_wise(a, b):
-    return tuple(x + y for x, y in zip(a, b))
+def element_wise(a, b, symbol=op.add):
+    return tuple(symbol(x, y) for x, y in zip(a, b))
 
 def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
     if tags is None:
@@ -402,20 +497,68 @@ def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
         tags = []
     return [f"summon marker {tuple_to_string(pos)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
 
-def summon(entity: str, position: str| tuple[int, int, int], tags:list[str]=None):
-    return [f"summon {entity} {tuple_to_string(position)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
+def format_string(s, *replace_order):
+    '''replaces _r1 with entries from replace_order'''
+    replace_order = list(replace_order)
+    print(replace_order)
+    # exit()
+    return re.sub(r"_r1", lambda _: str(replace_order.pop(0)), s)
+    
+
+def summon(entity: str, position: str| tuple[int, int, int], tags:list[str]=None, no_ai=False):
+    extra = '' if tags is None else (" {Tags:" + format_tags_for_nbt(tags) + ('NoAI:1b' if no_ai else '') + "}")
+    return [f"summon {entity} {tuple_to_string(position)}" + extra]
 
 def tp(from_, to_):
     return [f"tp {from_} {to_}"]
 
-def fill(pos1, pos2, block, mode="destroy", extra_args=''):
+def fill(pos1, pos2, block, mode="replace", extra_args=''):
     '''mode can be destroy, hollow, keep, outline, or replace.
     Only replace has args after that'''
     return [f'fill {tuple_to_string(pos1)} {tuple_to_string(pos2)} {block} {mode} {extra_args}']
 
-def setblock(pos1, block, mode="destroy"):
+def get_rectangular_prism_corners(point1, point2):
+    """
+    Returns the 8 corners of the rectangular prism formed by two points in 3D space.
+    """
+    x1, y1, z1 = point1
+    x2, y2, z2 = point2
+
+    # Determine the coordinates of the 8 corners
+    corners = [(x1, y1, z1), (x1, y1, z2), (x1, y2, z1), (x1, y2, z2),
+               (x2, y1, z1), (x2, y1, z2), (x2, y2, z1), (x2, y2, z2)]
+
+    return corners
+
+def border(point1, point2, block):
+    """
+    Draws the outline of the rectangular prism formed by two points in 3D space
+    using the draw_line() function.
+    """
+    corners = get_rectangular_prism_corners(point1, point2)
+
+    # Draw the edges of the rectangular prism
+    return list(it.chain(fill(corners[0], corners[1], block),
+    fill(corners[0], corners[2], block),
+    fill(corners[0], corners[4], block),
+    fill(corners[1], corners[3], block),
+    fill(corners[1], corners[5], block),
+    fill(corners[2], corners[3], block),
+    fill(corners[2], corners[6], block),
+    fill(corners[3], corners[7], block),
+    fill(corners[4], corners[5], block),
+    fill(corners[4], corners[6], block),
+    fill(corners[5], corners[7], block),
+    fill(corners[6], corners[7], block)))
+
+
+def setblock(pos1, block, mode="replace"):
     '''mode can be destroy, keep, or replace.'''
     return [f'setblock {tuple_to_string(pos1)} {block} {mode}']
+
+def clone(pos1, pos2, place_at_pos, mode="replace"):
+    '''mode can be destroy, keep, or replace.'''
+    return [f'clone {tuple_to_string(pos1)} {tuple_to_string(pos2)} {tuple_to_string(place_at_pos)} {mode}']
 
 
 def say(to_say:str):
@@ -477,11 +620,19 @@ def write_scoreboard_lines(mc_function_lines):
 def increment_each_tick(scoreboard_name, selector=GLOBAL_VAR_HOLDER):
     helper_update.append(f"scoreboard players add {selector} {scoreboard_name} 1")
 
+def increment_with_bound():
+    operation()
+
+def list_chain(x):
+    return list(it.chain.from_iterable(x))
+
 def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(scoreboard_name)
-    # if scoreboard_name not in scoreboard_variables_created:
-    # if val is not None:
-    write_scoreboard_line(scoreboard_set_value_template.format(holder, scoreboard_name, 0 if val is None else val ))
+    if val is not None:
+        # print("ran here")
+        reset.append(f"scoreboard players set {holder} {scoreboard_name} {val}")
+    return scoreboard_name
+    # write_scoreboard_line(scoreboard_set_value_template.format(holder, scoreboard_name, 0 if val is None else val ))
 
 def set_score_to_count_of(scoreboard, selector_to_count, 
                         scoreboard_owner=GLOBAL_VAR_HOLDER):
@@ -537,3 +688,5 @@ def reset_extras():
         create_const(i)
 
 reset_extras()
+
+end_of_tick_code = OutputFile("end_of_tick_code", is_update_file=True)
