@@ -428,7 +428,7 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
         return [f"{prefix} {to_run}"]
     # if type(to_run[0]) == list:
     #     to_run = list_chain(to_run)
-    
+    # print(prefix)
     # before = to_run.copy()
     # print(to_run)
     to_run.sort(key=lambda x: x.startswith("tag"))
@@ -443,17 +443,28 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
         # print("\n".join(before))
         # print("after:")
         # print("\n".join(to_run))
+    # suffixes = [f"{command[0] if type(command) is list else command}" for command in to_run]
     inside_part = [f"{prefix} {command[0] if type(command) is list else command}" for command in to_run]
-    if "nop" in sys.argv:
+    # not_optimized = [f"{prefix} {suffix}" for suffix in suffixes]
+    length_one_check = False
+    length_one_check = len(inside_part) == 1
+    if "nop" in sys.argv or length_one_check:
         return inside_part
     current_nest = nested_functions.add_variant(nested_function_number)
     nested_function_number += 1
-    current_nest.extend(inside_part)
-    if current_nest.content in nested_seen:
-        nested_function_number -= 1
-        nested_functions.pop_variant()
-        return call_function(nested_seen[current_nest.content])
-    nested_seen[current_nest.content] = current_nest
+    current_nest.extend(to_run)
+    # calling_part = nested_functions.add_variant(nested_function_number)
+    # nested_function_number += 1
+    # calling_part.append(prefix + ' ' + call_function(current_nest)[0])
+    return call_function(current_nest)
+    # if current_nest.content in nested_seen:
+    #     nested_function_number -= 1
+    #     nested_functions.pop_variant()
+    #     return call_function(nested_seen[current_nest.content])
+
+    # nested_seen[current_nest.content] = current_nest
+    # ret = [[prefix][0] + ' ' + call_function(current_nest)[0]]
+    # print("returning", ret)
     return call_function(current_nest)
 
 def create_scoreboard_as_needed(scoreboard_name: str):
