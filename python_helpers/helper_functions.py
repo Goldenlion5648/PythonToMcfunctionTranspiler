@@ -74,9 +74,12 @@ class OutputFile:
     def content(self):
         return "\n".join(self.lines)
 
-    
     def append(self, line):
         self.lines.append(line)
+                
+    def extend(self, *lines):
+        for line in lines:
+            self.lines.extend(line)
 
     def filter_unique_lines(self):
         seen = set()
@@ -99,14 +102,12 @@ class OutputFile:
 
     def get_variant(self, index) -> 'OutputFile':
         return self.variants[index]
-        
-    def extend(self, *lines):
-        for line in lines:
-            self.lines.extend(line)
+
     
     def write_to_file(self):
         # print(self.lines)
         file_to_make = self.folder_and_extension
+        # print(file_to_make)
         folder_to_make = os.path.dirname(file_to_make)
         if folder_to_make:
             os.makedirs(folder_to_make, exist_ok=True)
@@ -120,7 +121,87 @@ class OutputFile:
             except TypeError:
                 print("======Error with", self.file_name, "======")
                 print(self.lines)
+class BlockTag:
+    def __init__(self, tag_name, *blocks) -> None:
+        self.tag_name = tag_name
+        self.blocks = []
+        # print(blocks)
+        if type(blocks[0]) == list:
+            blocks = blocks[0] 
+        self.extend(blocks)
+        atexit.register(self.write_to_file)
+    def append(self, block):
+        self.blocks.append(block)
+                
+    def extend(self, *blocks):
+        for block in blocks:
+            self.blocks.extend(block)
+    @property
+    def content(self):
+        return "\n".join(self.blocks)
 
+    def __str__(self) -> str:
+        return f"#{DATAPACK_NAME}:{self.tag_name}"
+
+    def write_to_file(self):
+        # print(self.lines)
+
+        # return
+        # print(sys.path)
+        # exit()
+        # tag_file_path = os.path.join(os.sep.join(os.getcwd().split(os.sep)[:-2]),  "tags","blocks",f"{self.tag_name}.json")
+        up2 = os.path.dirname(os.path.dirname(os.getcwd()))
+        # print(up2)
+        tag_path = os.path.join(up2, "tags","blocks")
+        # os.path.relpath()
+        # print(tag_file_path)
+        # exit()
+
+        # file_to_make = self.folder_and_extension
+        # folder_to_make = os.path.dirname(file_to_make)
+        # if folder_to_make:
+        os.makedirs(tag_path, exist_ok=True)
+        tag_file = os.path.join(tag_path, f"{self.tag_name}.json")
+        # if self.force_unqiue_lines:
+            # self.filter_unique_lines()
+        default_json ='''{
+            "replace": false,
+            "values": [
+            ]
+        }'''
+        output = json.loads(default_json)
+        output['values'] = [f"minecraft:{block}" for block in self.blocks]
+        with open(tag_file, 'w') as f:
+            try:
+                print(json.dumps(output, indent=4), file=f)
+            except TypeError:
+                print("======Error with", self.file_name, "======")
+                print(self.lines)
+
+class SettingSign:
+    TOTAL_STATES_STRING = "STATE_COUNT"
+    def __init__(self, pos, template, state_id_variable, total_states) -> None:
+        self.pos = pos
+        self.template = template
+        self.state_id_variable = state_id_variable
+        self.states = []
+        self.total_states = total_states
+        
+
+    def append(self, *new_state):
+        self.states.append(
+            execute_if_score_equals(self.state_id_variable, len(self.states),
+                setblock(self.pos, AIR) +
+                raw_formatted(f"setblock {tuple_to_string(self.pos)} {self.template}", *new_state) + 
+                macro(f"{self.state_id_variable} %= {self.total_states}")
+            )
+        )
+        # self.states.append(self.run_after_click)
+    # def extend(self, *new_states):
+        # self.states.extend(new_states)
+    def build(self):
+        return list_chain(self.states) + macro(f"{self.state_id_variable} %= {self.total_states}")
+    
 
 UPDATE_JSON_FILE = None
 def add_update_files():
@@ -285,7 +366,7 @@ def scoreboard_operation(score1, op, score2: int | str, owner1=GLOBAL_VAR_HOLDER
     second_part = f"{owner2} {score2}"
     if type(score2) is int:
         second_part = const_wrapper(score2)
-    create_scoreboard(score1, 0, owner1)
+    # create_scoreboard(score1, 0, owner1)
     return [f"scoreboard players operation {owner1} {score1} {op} {second_part}"]
 
 def increment_with_bound(score1, bound : int, owner1=GLOBAL_VAR_HOLDER, owner2=GLOBAL_VAR_HOLDER):
@@ -310,7 +391,7 @@ def increment(score, owner1: str = GLOBAL_VAR_HOLDER):
     return scoreboard_operation(score, '+=', 1, owner1=owner1)
 
 def raw(text: str):
-    return [line.strip() for line in text.strip().splitlines()]
+    return [line.strip().removeprefix("/") for line in text.strip().splitlines()] 
 
 def tuple_to_relative_string(tup):
     return f"~{tup[0]} ~{tup[1]} ~{tup[2]}"
@@ -320,8 +401,8 @@ def tuple_to_string(tup):
         return tup
     return " ".join(str(x) for x in tup)
 
-def effect(target, potion_effect, time='infinite', amplifier=0):
-    return [f'effect give {target} {potion_effect} {time} {amplifier}']
+def effect(target, potion_effect, time='infinite', amplifier=0, hide_particles='true'):
+    return [f'effect give {target} {potion_effect} {time} {amplifier} {hide_particles}']
 effect_give = effect
 def effect_clear(target, effect=''):
     return [f'effect clear {target} {effect}']
@@ -468,10 +549,10 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
     # print("returning", ret)
     return call_function(current_nest)
 
-def create_scoreboard_as_needed(scoreboard_name: str):
+def create_scoreboard_as_needed(scoreboard_name: str, display_name=''):
     if scoreboard_name not in scoreboard_variables_created:
         scoreboard_variables_created.add(scoreboard_name)
-        reset.append(f"scoreboard objectives add {scoreboard_name} dummy")
+        reset.append(f"scoreboard objectives add {scoreboard_name} dummy {display_name}")
 
 def set_score_to_total_of_other_scores(score_to_set, score_to_total_from_others, other_score_owner_selectors, score_to_set_owner=GLOBAL_VAR_HOLDER):
     return [
@@ -500,9 +581,11 @@ def playsound(sound_name: str, pitch : float=1, to_play_sound_to_selector: str="
 def element_wise(a, b, symbol=op.add):
     return tuple(symbol(x, y) for x, y in zip(a, b))
 
-def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
+def place_marker(pos:str="~ ~ ~", tag=None, tags:list[str]=None):
     if tags is None:
         tags = []
+    if tag is not None:
+        tags.append(tag)
     return [f"summon marker {tuple_to_string(pos)}" + " {Tags:" + format_tags_for_nbt(tags) + "}"]
 summon_marker = place_marker
 
@@ -514,22 +597,32 @@ def place_marker(pos:str="~ ~ ~", tags:list[str]=None):
 def format_string(s, *replace_order):
     '''replaces _r1 with entries from replace_order'''
     replace_order = list(replace_order)
-    print(replace_order)
-    # exit()
     return re.sub(r"_r1", lambda _: str(replace_order.pop(0)), s)
-    
+
+def raw_formatted(s, *replace_order):
+    return [format_string(s, *replace_order)]
 
 def summon(entity: str, position: str| tuple[int, int, int], tags:list[str]=None, no_ai=False):
     extra = '' if tags is None else (" {Tags:" + format_tags_for_nbt(tags) + ('NoAI:1b' if no_ai else '') + "}")
     return [f"summon {entity} {tuple_to_string(position)}" + extra]
 
+def gamemode(mode, selector):
+    return [f'gamemode {mode} {selector}']
+
 def tp(from_, to_):
+    if type(to_) == tuple:
+        to_ = tuple_to_string(to_)
     return [f"tp {from_} {to_}"]
 
 def fill(pos1, pos2, block, mode="replace", extra_args=''):
     '''mode can be destroy, hollow, keep, outline, or replace.
     Only replace has args after that'''
     return [f'fill {tuple_to_string(pos1)} {tuple_to_string(pos2)} {block} {mode} {extra_args}']
+
+def setblock_filtered(pos, block, replaceable: str | list):
+    # if type(replaceable) == str:
+    #     replaceable = [replaceable]
+    return fill(pos, pos, block, 'replace', replaceable)
 
 def get_rectangular_prism_corners(point1, point2):
     """
@@ -575,8 +668,8 @@ def clone(pos1, pos2, place_at_pos, mode="replace"):
     return [f'clone {tuple_to_string(pos1)} {tuple_to_string(pos2)} {tuple_to_string(place_at_pos)} {mode}']
 
 
-def say(to_say:str):
-    return [f"say {to_say}"]
+def say(*to_say:str):
+    return [f"say {' '.join(str(x) for x in to_say)}"]
 
 def debug(to_say):
     return tellraw("DEBUG") + tellraw(to_say)
@@ -640,8 +733,15 @@ def increment_with_bound():
 def list_chain(x):
     return list(it.chain.from_iterable(x))
 
-def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER):
-    create_scoreboard_as_needed(scoreboard_name)
+def add_scoreboard(scoreboard_name, display_name='', criteria='dummy'):
+    display_name = f'"{display_name}"'
+    return [f'scoreboard objectives add {scoreboard_name} {criteria} {display_name}']
+
+def remove_scoreboard(scoreboard_name):
+    return [f"scoreboard objectives remove {scoreboard_name}"]
+
+def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER, display_name=''):
+    create_scoreboard_as_needed(scoreboard_name, display_name)
     if val is not None:
         # print("ran here")
         reset.append(f"scoreboard players set {holder} {scoreboard_name} {val}")
@@ -703,4 +803,4 @@ def reset_extras():
 
 reset_extras()
 
-end_of_tick_code = OutputFile("end_of_tick_code", is_update_file=True)
+# end_of_tick_code = OutputFile("end_of_tick_code", is_update_file=True)
