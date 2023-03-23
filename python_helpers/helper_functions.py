@@ -255,11 +255,24 @@ def call_function(function_name:OutputFile | str, delay=0, unit='t'):
 def clear_scheduled_functions():
     return [f"schedule clear {x}" for x in scheduled_functions]
 
+
+def create_scoreboard_as_needed(scoreboard_name: str, display_name=''):
+    if scoreboard_name not in scoreboard_variables_created:
+        scoreboard_variables_created.add(scoreboard_name)
+        reset.append(f"scoreboard objectives add {scoreboard_name} dummy {display_name}")
+        
+def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER, display_name=''):
+    create_scoreboard_as_needed(scoreboard_name, display_name)
+    if val is not None:
+        # print("ran here")
+        reset.append(f"scoreboard players set {holder} {scoreboard_name} {val}")
+    return scoreboard_name
+
 run_function = call_function
 get_type = type
 def selector_entity(tag=None, tags=None, negative_tags=None, 
                     limit=None,type=None,dx=None,dy=None,dz=None, 
-                    distance=None, sort=None, team=None,
+                    distance=None, sort=None, team=None, gamemode=None,
                     score=None, scores=None, selector='@e'):
     to_go_over = list(locals().items())
     ret = []
@@ -278,6 +291,10 @@ def selector_entity(tag=None, tags=None, negative_tags=None,
             else:
                 ret.extend(f"{keyword}={value}" for value in potential_value)
         else:
+            if keyword == 'distance':
+                # potential_value = f'{potential_value}'
+                if get_type(potential_value) != str:
+                    potential_value = f'..{potential_value}'
             ret.append(f"{keyword}={potential_value}")
     combined = ','.join(ret)
     return f"{selector}[{combined}]" if combined else f"{selector}"
@@ -345,6 +362,8 @@ allow_after_delay = run_when_tag_gone
 
 delayed_code_id = "delayed_code_id"
 delayed_code_num = 0
+def clear(selector, item_to_clear=''):
+    return [f'clear {selector} {item_to_clear}']
 
 def delay_code_block(lines_to_delay : list, delay_time: int, unit='t'):
     global delayed_code_num
@@ -447,6 +466,15 @@ def execute_if(condition : str, to_run : list):
 def execute_if_entity(selector : str, to_run : list):
     return convert_from_single_as_needed(f"execute if entity {selector} run", to_run)
 
+entity_count_score = create_scoreboard("entity_count_score")
+def execute_if_count(selector : str, check: str, to_run : list):
+    owner = f"count_of_{selector}"
+    return store_count_entity_score(entity_count_score, selector, owner) +\
+    execute_if_score(entity_count_score, check, to_run, owner)
+
+def execute_unless_entity(selector : str, to_run : list):
+    return convert_from_single_as_needed(f"execute unless entity {selector} run", to_run)
+
 def execute_if_block_matches(position_to_check: str | tuple[int, int, int], block_to_match: str, to_run : list):
     if type(position_to_check) != str:
         position_to_check = tuple_to_string(position_to_check)
@@ -460,10 +488,13 @@ def execute_if_score(scoreboard_name : str, check: str, to_run : list, if_or_unl
 
 execute_unless_score = partial(execute_if_score, if_or_unless="unless")
 
-def execute_if_score_equals(scoreboard_name : str, value: str|int, to_run : list):
+def execute_if_score_equals(scoreboard_name : str, value: str|int, to_run : list, if_or_unless='if', otherwise=None):
     create_scoreboard(scoreboard_name)
-    return convert_from_single_as_needed(f"execute if score {GLOBAL_VAR_HOLDER} {scoreboard_name} matches {value} run", to_run)
+    complement = {'if':'unless', 'unless':'if'}
+    return convert_from_single_as_needed(f"execute {if_or_unless} score {GLOBAL_VAR_HOLDER} {scoreboard_name} matches {value} run", to_run) + ([] if otherwise is None else (convert_from_single_as_needed(f"execute {complement[if_or_unless]} score {GLOBAL_VAR_HOLDER} {scoreboard_name} matches {value} run", to_run)))
 execute_if_score_matches = execute_if_score_equals
+execute_unless_score_matches = partial(execute_if_score_equals, if_or_unless='unless')
+
 def execute_if_score_other_score(score1 : str, op: str, score2: str, to_run : list, owner1: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER, if_or_unless='if'):
     create_scoreboard_as_needed(score1)
     return convert_from_single_as_needed(f"execute {if_or_unless} score {owner1} {score1} {op} {owner2} {score2} run", to_run)
@@ -484,7 +515,7 @@ def store_count_entity_score(scoreboard_name: str, entity_selector: str, score_o
 
 def set_score_from(scoreboard_name: str, get_score_from: str, owner: str=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(scoreboard_name)
-    return f"execute store result score {owner} {scoreboard_name} {get_score_from}"
+    return [f"execute store result score {owner} {scoreboard_name} {get_score_from}"]
 
 def set_score_from_other_score(score_to_set: str, other_score: str, owner: str=GLOBAL_VAR_HOLDER, owner2: str=GLOBAL_VAR_HOLDER):
     create_scoreboard_as_needed(score_to_set)
@@ -512,7 +543,7 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
     # print(prefix)
     # before = to_run.copy()
     # print(to_run)
-    to_run.sort(key=lambda x: x.startswith("tag"))
+    # to_run.sort(key=lambda x: x.startswith("tag"))
     # try:
     # except:
         # print(to_run)
@@ -549,10 +580,6 @@ def convert_from_single_as_needed(prefix:str, to_run: str | list):
     # print("returning", ret)
     return call_function(current_nest)
 
-def create_scoreboard_as_needed(scoreboard_name: str, display_name=''):
-    if scoreboard_name not in scoreboard_variables_created:
-        scoreboard_variables_created.add(scoreboard_name)
-        reset.append(f"scoreboard objectives add {scoreboard_name} dummy {display_name}")
 
 def set_score_to_total_of_other_scores(score_to_set, score_to_total_from_others, other_score_owner_selectors, score_to_set_owner=GLOBAL_VAR_HOLDER):
     return [
@@ -681,7 +708,12 @@ def get_correct_formatting(to_say):
 def tellraw(to_say:str, selector='@a'):
     to_say = get_correct_formatting(to_say)
     return [f'tellraw {selector} {to_say}']
+
+def tellraw_colored(to_say:str, selector='@a', color='white'):
+    # to_say = get_correct_formatting(to_say)
+    return [f'tellraw {selector} {{"text":"{to_say}","color":"{color}"}}']
 announce = tellraw
+announce_colored = tellraw_colored
 
 def title(text, selector='@a', spot='title'):
     text = get_correct_formatting(text)
@@ -740,22 +772,21 @@ def add_scoreboard(scoreboard_name, display_name='', criteria='dummy'):
 def remove_scoreboard(scoreboard_name):
     return [f"scoreboard objectives remove {scoreboard_name}"]
 
-def create_scoreboard(scoreboard_name: str, val=None, holder=GLOBAL_VAR_HOLDER, display_name=''):
-    create_scoreboard_as_needed(scoreboard_name, display_name)
-    if val is not None:
-        # print("ran here")
-        reset.append(f"scoreboard players set {holder} {scoreboard_name} {val}")
-    return scoreboard_name
+
     # write_scoreboard_line(scoreboard_set_value_template.format(holder, scoreboard_name, 0 if val is None else val ))
 
 def set_score_to_count_of(scoreboard, selector_to_count, 
                         scoreboard_owner=GLOBAL_VAR_HOLDER):
-    return [set_score_from(scoreboard, f"if entity {selector_to_count}", scoreboard_owner)]
+    return set_score_from(scoreboard, f"if entity {selector_to_count}", scoreboard_owner)
 
 def add_tag(selector: str, tag_name: str):
     return [f"tag {selector} add {tag_name}"]
 
+def remove_tag(selector: str, tag_name: str):
+    return [f"tag {selector} remove {tag_name}"]
+
 tag_add = add_tag
+tag_remove = add_tag
 
 def format_tags_for_nbt(tags : list[str]):
     return f"{[str(x) for x in tags]}".replace("'", '"')
